@@ -10,7 +10,7 @@ using **your own personal GitHub and AWS accounts** for testing. Allow about
 
 1. You keep the transfer scripts in a GitHub repo (the `scripts/` folder).
 2. Every time you push a change to the `main` branch, GitHub runs a small
-   automated job (a **GitHub Action**).
+   automated job (a **GitHub Action**). Right now, github actions is turned off by default for Fordham repos and a request needs to be made to infra team to turn on capability for specific repos. 
 3. That job signs in to AWS and copies the `scripts/` folder into an **S3
    bucket**, which is basically a folder in the cloud.
 4. Ellucian (or anything else) reads the latest scripts from that bucket.
@@ -267,6 +267,68 @@ trigger it. To run it anyway: GitHub → **Actions** → **Sync scripts to S3** 
 
 ---
 
+## Step 9 — Optional: a web page anyone can open to browse the bucket
+
+By default only you (and the Action) can see the bucket. This optional step
+publishes a simple page, hosted for free by **GitHub Pages**, that lists the
+bucket live: folders, files, sizes, dates, and a link to open each file.
+Anyone with the link can use it, no AWS or GitHub login needed.
+
+**The trade-off:** to make that work, everything under `scripts/` in the
+bucket becomes readable by anyone on the internet. Fine for test scripts;
+think twice if a script ever contains passwords or internal hostnames.
+
+1. **Check the page settings.** Open `docs/index.html` and look at the three
+   lines under `SETTINGS` near the bottom. `BUCKET_URL` must be your bucket;
+   the example already says `hants-fordham-ellucian-test`. Change it if you
+   picked a different bucket name in Step 5, then commit and push:
+
+   ```bash
+   git add docs/index.html
+   git commit -m "Add bucket browser page"
+   git push
+   ```
+
+2. **Turn on GitHub Pages.** In the browser: your repo → **Settings** →
+   **Pages** → under *Build and deployment*, Source **Deploy from a branch**,
+   Branch **main**, Folder **/docs** → **Save**.
+
+   > Private repos can use Pages only on a paid GitHub plan (Pro for a
+   > personal account). If that page shows an upgrade prompt instead of the
+   > Source dropdown, either upgrade or make the repo public
+   > (Settings → General → Danger Zone → Change visibility). The published
+   > page is public either way.
+
+3. **Make the bucket public and allow the page to read it.** This is
+   separate from Step 5 on purpose; the normal setup stays private.
+
+   ```bash
+   GITHUB_ORG=hantswilliams \
+   BUCKET=hants-fordham-ellucian-test \
+   ./aws/make_bucket_public.sh
+   ```
+
+   It prints what it did and the URLs to use. If it stops with a message
+   about your *account* blocking public policies, follow the command it
+   prints, then run it again.
+
+4. **Open the page.** About a minute after step 2:
+
+   ```
+   https://hantswilliams.github.io/fordham-ellucian-s3-sync/
+   ```
+
+   You should see a `latest/` and a `releases/` folder. Click into `latest/`
+   and then a file to open it straight from S3. That URL is what you share.
+
+**Undo** (bucket private again; the page will then show "The bucket is not public"):
+
+```bash
+UNDO=yes BUCKET=hants-fordham-ellucian-test ./aws/make_bucket_public.sh
+```
+
+---
+
 ## Troubleshooting
 
 | What you see | What it means | Fix |
@@ -281,6 +343,10 @@ trigger it. To run it anyway: GitHub → **Actions** → **Sync scripts to S3** 
 | `Missing required field Principal` in the S3 console | An IAM-role policy was pasted into the bucket policy box | See "Which policy goes where" in README.md; the setup script handles this for you |
 | `git push` asks for a password | Git isn't using your `gh` login | Run `gh auth setup-git`, then push again |
 | The Action didn't run at all | Nothing in `scripts/` changed, or you pushed to another branch | Use **Run workflow** on the Actions tab, or change a script |
+| Browser page says `The browser could not reach the bucket` | The bucket has no CORS rule for the page's address, or `BUCKET_URL` in `docs/index.html` is wrong | Run Step 9.3 again (it sets CORS), and check `BUCKET_URL` uses the `.s3.<region>.amazonaws.com` form |
+| Browser page says `The bucket is not public` | The public bucket policy is missing, or Block Public Access is still on (bucket or account level) | Run Step 9.3; if it complains about the *account* setting, run the command it prints first |
+| Settings → Pages shows an upgrade prompt | The repo is private and the GitHub plan is Free | Upgrade to Pro, or make the repo public |
+| Pages URL gives 404 | Pages was just enabled, or the folder isn't `/docs` on `main` | Wait a minute and reload; re-check Step 9.2 |
 
 For any failed run: GitHub → **Actions** → click the red ❌ run → click the
 red step. The actual error is near the bottom of that step's log.
@@ -315,7 +381,10 @@ Nothing in the code changes. You:
 3. Re-run Step 5 with the Fordham org name and a Fordham bucket name. Add
    `ELLUCIAN_ACCOUNT_ID=<their 12-digit AWS account>` to give Ellucian
    read access.
-4. Tear down your personal test setup (above).
+4. If you want the public browser page there too, repeat Step 9 with the
+   Fordham org and bucket (and update `BUCKET_URL` / `REPO_URL` in
+   `docs/index.html`). Otherwise skip it; the Fordham bucket stays private.
+5. Tear down your personal test setup (above).
 
 ---
 
@@ -327,3 +396,5 @@ Nothing in the code changes. You:
 - **S3 bucket**: a storage container in AWS for files.
 - **IAM role**: an AWS identity with specific permissions that something (here, GitHub) can temporarily use.
 - **OIDC / trust policy**: how AWS checks that the request really comes from *your* GitHub repo, so no passwords need to be shared.
+- **GitHub Pages**: free hosting for simple web pages straight from a repo folder.
+- **CORS**: a bucket setting that lets a web page on another site (here, GitHub Pages) read from the bucket in the browser.

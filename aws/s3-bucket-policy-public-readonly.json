@@ -1,0 +1,31 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "s3:*",
+      "Resource": [
+        "arn:aws:s3:::<S3_BUCKET>",
+        "arn:aws:s3:::<S3_BUCKET>/*"
+      ],
+      "Condition": { "Bool": { "aws:SecureTransport": "false" } }
+    },
+    {
+      "Sid": "PublicListScripts",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::<S3_BUCKET>",
+      "Condition": { "StringLike": { "s3:prefix": ["scripts/", "scripts/*"] } }
+    },
+    {
+      "Sid": "PublicReadScripts",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::<S3_BUCKET>/scripts/*"
+    }
+  ]
+}

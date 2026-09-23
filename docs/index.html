@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fordham ↔ Ellucian shared scripts</title>
+<style>
+  :root { --fg:#1f2328; --muted:#59636e; --line:#d1d9e0; --bg:#fff; --bg2:#f6f8fa; --link:#0969da; --bad:#b42318; --badbg:#fff1f0; --badline:#f5c2c0; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color:var(--fg); background:var(--bg); }
+  header { padding: 20px 24px 12px; border-bottom: 1px solid var(--line); background: var(--bg2); }
+  h1 { margin:0 0 4px; font-size: 20px; }
+  .sub { margin:0; color:var(--muted); font-size: 13px; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px 24px 24px; }
+  nav.crumbs { font-size: 14px; margin: 8px 0 12px; word-break: break-all; }
+  nav.crumbs a { color: var(--link); text-decoration: none; }
+  nav.crumbs a:hover { text-decoration: underline; }
+  nav.crumbs .sep { color: var(--muted); margin: 0 6px; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+  table { border-collapse: collapse; width: 100%; min-width: 520px; }
+  th, td { text-align: left; padding: 8px 12px; border-top: 1px solid var(--line); white-space: nowrap; }
+  th { background: var(--bg2); border-top: 0; font-weight: 600; font-size: 13px; color: var(--muted); }
+  td.name { white-space: normal; word-break: break-all; }
+  td.size, th.size { text-align: right; }
+  td a { color: var(--link); text-decoration: none; }
+  td a:hover { text-decoration: underline; }
+  .icon { display: inline-block; width: 1.5em; color: var(--muted); }
+  .status { padding: 12px 14px; border-radius: 6px; margin: 8px 0 12px; font-size: 14px; }
+  .status.info { color: var(--muted); }
+  .status.error { background: var(--badbg); color: var(--bad); border: 1px solid var(--badline); white-space: pre-wrap; }
+  td.empty { padding: 20px; color: var(--muted); text-align: center; white-space: normal; }
+  footer { max-width: 960px; margin: 0 auto; padding: 0 24px 24px; color: var(--muted); font-size: 12px; }
+  footer a { color: var(--link); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Shared scripts</h1>
+  <p class="sub">Live listing of <code id="bucket-label"></code>. Click a folder to open it, a file to view or download it.</p>
+</header>
+<main>
+  <nav class="crumbs" id="crumbs"></nav>
+  <div id="status" class="status info" hidden></div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Name</th><th class="size">Size</th><th>Last modified</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+</main>
+<footer>
+  This page reads the bucket directly from your browser each time it loads; nothing is stored here.
+  Source: <a id="repo-link" href="#"></a>
+</footer>
+<script>
+/* ============================================================================
+   SETTINGS - edit these for your bucket and repo.
+
+   BUCKET_URL   Use the *regional* endpoint: https://BUCKET.s3.REGION.amazonaws.com
+                (the global BUCKET.s3.amazonaws.com form redirects for buckets
+                outside us-east-1, and that redirect breaks browser requests).
+                No trailing slash.
+   ROOT_PREFIX  Folder to start in. Keep it under "scripts/": the bucket policy
+                in aws/s3-bucket-policy-public-readonly.json only allows
+                listing that folder.
+   REPO_URL     Shown in the footer.
+
+   The bucket must allow public listing/reading of ROOT_PREFIX and have a CORS
+   rule for this page's origin. aws/make_bucket_public.sh sets both up.
+   ========================================================================== */
+const BUCKET_URL  = "https://hants-fordham-ellucian-test.s3.us-east-1.amazonaws.com";
+const ROOT_PREFIX = "scripts/";
+const REPO_URL    = "https://github.com/hantswilliams/fordham-ellucian-s3-sync";
+/* ========================================================================== */
+
+const $ = (id) => document.getElementById(id);
+
+// The folder being shown lives in the URL hash, e.g. #scripts/latest/
+function currentPrefix() {
+  let p = decodeURIComponent(location.hash.replace(/^#/, ""));
+  if (!p.startsWith(ROOT_PREFIX)) p = ROOT_PREFIX;
+  if (p && !p.endsWith("/")) p += "/";
+  return p;
+}
+
+function objectUrl(key) {
+  return BUCKET_URL + "/" + key.split("/").map(encodeURIComponent).join("/");
+}
+
+function fmtSize(n) {
+  n = Number(n);
+  if (!(n >= 1024)) return n + " B";
+  const units = ["KB", "MB", "GB", "TB"]; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < units.length - 1);
+  return n.toFixed(n < 10 ? 1 : 0) + " " + units[i];
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+function text(el, tag) {
+  const n = el.getElementsByTagName(tag)[0];
+  return n ? n.textContent : "";
+}
+
+// Fetch every page of S3's ListObjectsV2 output for one folder.
+async function listFolder(prefix) {
+  const folders = [], files = [];
+  let token = null;
+  do {
+    const params = new URLSearchParams({ "list-type": "2", "delimiter": "/", "prefix": prefix, "max-keys": "1000" });
+    if (token) params.set("continuation-token", token);
+    const res = await fetch(BUCKET_URL + "/?" + params.toString(), { cache: "no-store" });
+    const xml = new DOMParser().parseFromString(await res.text(), "application/xml");
+    const err = xml.getElementsByTagName("Error")[0];
+    if (!res.ok || err) {
+      throw new Error(err ? text(err, "Code") + ": " + text(err, "Message") : "HTTP " + res.status);
+    }
+    for (const cp of xml.getElementsByTagName("CommonPrefixes")) folders.push(text(cp, "Prefix"));
+    for (const c of xml.getElementsByTagName("Contents")) {
+      const key = text(c, "Key");
+      if (key === prefix) continue;   // the zero-byte "folder" object itself
+      files.push({ key, size: text(c, "Size"), modified: text(c, "LastModified") });
+    }
+    token = text(xml, "IsTruncated") === "true" ? text(xml, "NextContinuationToken") : null;
+  } while (token);
+  return { folders, files };
+}
+
+// Turn the usual failures into a message a non-AWS person can act on.
+function explain(err) {
+  const msg = String((err && err.message) || err);
+  if (err instanceof TypeError) {
+    return "The browser could not reach the bucket.\n\n" +
+      "Usually the bucket has no CORS rule allowing this page's origin (" + location.origin + "), " +
+      "or BUCKET_URL at the top of this page is wrong. Running aws/make_bucket_public.sh adds the CORS rule.\n\n" +
+      "Detail: " + msg;
+  }
+  if (/AccessDenied/.test(msg)) {
+    return "The bucket is not public.\n\n" +
+      "The bucket policy that lets anyone list " + ROOT_PREFIX + " is missing, or Block Public Access is still on " +
+      "(check the account-level setting too). Running aws/make_bucket_public.sh fixes both.\n\n" +
+      "Detail: " + msg;
+  }
+  if (/NoSuchBucket/.test(msg)) {
+    return "There is no bucket at " + BUCKET_URL + ". Check BUCKET_URL at the top of this page.\n\nDetail: " + msg;
+  }
+  return "Could not list the bucket.\n\nDetail: " + msg;
+}
+
+function el(tag, cls, content) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (typeof content === "string") e.textContent = content;
+  else if (content) e.appendChild(content);
+  return e;
+}
+
+function link(href, label, icon) {
+  const a = el("a"); a.href = href;
+  a.appendChild(el("span", "icon", icon));
+  a.appendChild(document.createTextNode(label));
+  return a;
+}
+
+function row(...cells) {
+  const tr = el("tr");
+  for (const c of cells) tr.appendChild(c);
+  return tr;
+}
+
+function renderCrumbs(prefix) {
+  const nav = $("crumbs"); nav.textContent = "";
+  const add = (label, p) => nav.appendChild(link("#" + p, label, ""));
+  add(ROOT_PREFIX.replace(/\/$/, "") || "(bucket root)", ROOT_PREFIX);
+  let acc = ROOT_PREFIX;
+  for (const part of prefix.slice(ROOT_PREFIX.length).split("/").filter(Boolean)) {
+    acc += part + "/";
+    nav.appendChild(el("span", "sep", "/"));
+    add(part, acc);
+  }
+}
+
+async function render() {
+  const prefix = currentPrefix();
+  const status = $("status"), rows = $("rows");
+  renderCrumbs(prefix);
+  rows.textContent = "";
+  status.className = "status info"; status.textContent = "Loading…"; status.hidden = false;
+  try {
+    const { folders, files } = await listFolder(prefix);
+    status.hidden = true;
+    if (prefix !== ROOT_PREFIX) {
+      const up = prefix.slice(0, prefix.slice(0, -1).lastIndexOf("/") + 1);
+      rows.appendChild(row(el("td", "name", link("#" + up, "..", "↑")), el("td", "size", ""), el("td", "", "")));
+    }
+    for (const f of folders) {
+      const name = f.slice(prefix.length).replace(/\/$/, "") + "/";
+      rows.appendChild(row(el("td", "name", link("#" + f, name, "📁")), el("td", "size", "—"), el("td", "", "—")));
+    }
+    for (const f of files) {
+      const a = link(objectUrl(f.key), f.key.slice(prefix.length), "📄");
+      a.target = "_blank"; a.rel = "noopener";
+      rows.appendChild(row(el("td", "name", a), el("td", "size", fmtSize(f.size)), el("td", "", fmtDate(f.modified))));
+    }
+    if (!folders.length && !files.length) {
+      const cell = el("td", "empty", "This folder is empty."); cell.colSpan = 3;
+      rows.appendChild(row(cell));
+    }
+  } catch (err) {
+    status.className = "status error"; status.textContent = explain(err); status.hidden = false;
+  }
+}
+
+$("bucket-label").textContent = BUCKET_URL.replace(/^https?:\/\//, "") + "/" + ROOT_PREFIX;
+$("repo-link").href = REPO_URL;
+$("repo-link").textContent = REPO_URL.replace(/^https?:\/\//, "");
+window.addEventListener("hashchange", render);
+render();
+</script>
+</body>
+</html>
