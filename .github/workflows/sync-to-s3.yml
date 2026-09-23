@@ -1,0 +1,56 @@
+name: Sync scripts to S3
+
+# Runs on every push to main that touches the scripts folder.
+# Can also be run by hand from the Actions tab.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - ".github/workflows/sync-to-s3.yml"
+  workflow_dispatch:
+
+# Needed for GitHub -> AWS OIDC login (no long-lived AWS keys stored in GitHub).
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1                 # change to your bucket's region
+  S3_BUCKET: ${{ vars.S3_BUCKET }}      # set in repo Settings > Secrets and variables > Actions > Variables
+  S3_PREFIX: scripts
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Log in to AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 1) The "latest" copy Ellucian reads from. --delete removes files
+      #    from S3 that were deleted in the repo, so S3 mirrors main exactly.
+      - name: Sync scripts/ to s3://BUCKET/scripts/latest/
+        run: |
+          aws s3 sync scripts/ "s3://${S3_BUCKET}/${S3_PREFIX}/latest/" \
+            --delete \
+            --exclude "__pycache__/*" --exclude "*.pyc"
+
+      # 2) A point-in-time archive keyed by commit SHA, for audit / rollback.
+      - name: Upload versioned archive
+        run: |
+          zip -r "scripts-${GITHUB_SHA}.zip" scripts -x "*/__pycache__/*" "*.pyc"
+          aws s3 cp "scripts-${GITHUB_SHA}.zip" \
+            "s3://${S3_BUCKET}/${S3_PREFIX}/releases/scripts-${GITHUB_SHA}.zip"
+
+      - name: Summary
+        run: |
+          echo "### Synced to S3" >> $GITHUB_STEP_SUMMARY
+          echo "- Latest: s3://${S3_BUCKET}/${S3_PREFIX}/latest/" >> $GITHUB_STEP_SUMMARY
+          echo "- Archive: s3://${S3_BUCKET}/${S3_PREFIX}/releases/scripts-${GITHUB_SHA}.zip" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: ${GITHUB_SHA}" >> $GITHUB_STEP_SUMMARY

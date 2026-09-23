@@ -1,0 +1,4 @@
+# Add dependencies for the transfer scripts here, e.g.:
+# boto3
+# paramiko
+# requests
