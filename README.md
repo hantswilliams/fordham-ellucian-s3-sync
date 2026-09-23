@@ -41,7 +41,9 @@ Neither of the first two goes on the bucket.
 
 ### Scripted (recommended)
 
-Needs the AWS CLI v2, signed in as someone who can manage IAM and S3.
+Needs the AWS CLI v2, signed in as someone who can manage IAM and S3, and
+the `gh` CLI signed in with the repo already created on GitHub (the script
+asks GitHub for the repo's exact OIDC subject; see below).
 
 ```bash
 aws sso login --profile fordham && export AWS_PROFILE=fordham   # or however you sign in
@@ -58,7 +60,7 @@ If the `gh` CLI is signed in and the repo exists, it also sets the
 
 Optional settings: `REGION`, `ROLE_NAME`, `GITHUB_REPO`,
 `ELLUCIAN_ACCOUNT_ID` (adds the Ellucian read-only bucket policy),
-`SET_GITHUB_SETTINGS=no`.
+`SET_GITHUB_SETTINGS=no`, `GITHUB_SUB_PREFIX` (skip the GitHub lookup).
 
 `./aws/teardown_aws.sh` removes the role. It leaves the bucket and OIDC
 provider alone and prints the commands to remove them.
@@ -69,8 +71,15 @@ provider alone and prints the commands to remove them.
 2. **OIDC provider**: IAM → Identity providers → Add → OpenID Connect,
    URL `https://token.actions.githubusercontent.com`, audience `sts.amazonaws.com`.
 3. **IAM role**: IAM → Roles → Create role → Web identity → the provider above.
-   Replace its trust policy with `aws/github-oidc-trust-policy.json` (placeholders filled in),
-   then add an inline policy from `aws/s3-sync-permissions-policy.json`.
+   Replace its trust policy with `aws/github-oidc-trust-policy.json`, filling in
+   `<AWS_ACCOUNT_ID>` and `<GITHUB_SUB_PREFIX>`. Get the prefix from GitHub rather
+   than typing it: repos created after July 2026 send `repo:org@123/repo@456`
+   (owner ID and repo ID), older ones send `repo:org/repo`, and a mismatch fails
+   with `Not authorized to perform sts:AssumeRoleWithWebIdentity`.
+   ```bash
+   gh api repos/<org>/<repo>/actions/oidc/customization/sub --jq .sub_claim_prefix
+   ```
+   Then add an inline policy from `aws/s3-sync-permissions-policy.json`.
 4. **GitHub**: Settings → Secrets and variables → Actions:
    secret `AWS_ROLE_ARN`, variable `S3_BUCKET`.
 5. Set `AWS_REGION` in the workflow if you're not in `us-east-1`.

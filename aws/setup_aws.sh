@@ -10,7 +10,9 @@
 #   5. (optional) GitHub repo secret AWS_ROLE_ARN + variable S3_BUCKET via `gh`
 #
 # Safe to re-run. Requires: AWS CLI v2, logged in as someone who can manage
-# IAM and S3 (e.g. `aws sso login --profile fordham` then AWS_PROFILE=fordham).
+# IAM and S3 (e.g. `aws sso login --profile fordham` then AWS_PROFILE=fordham),
+# plus the `gh` CLI signed in (`gh auth login`) with the repo already created
+# on GitHub, so the script can ask GitHub for the repo's exact OIDC subject.
 #
 # Usage:
 #   GITHUB_ORG=fordham-dsg BUCKET=fordham-ellucian-scripts ./aws/setup_aws.sh
@@ -24,6 +26,7 @@ GITHUB_ORG="${GITHUB_ORG:-<GITHUB_ORG>}"
 GITHUB_REPO="${GITHUB_REPO:-fordham-ellucian-s3-sync}"
 ROLE_NAME="${ROLE_NAME:-github-actions-fordham-ellucian-s3-sync}"
 ELLUCIAN_ACCOUNT_ID="${ELLUCIAN_ACCOUNT_ID:-}"      # blank = skip step 4
+GITHUB_SUB_PREFIX="${GITHUB_SUB_PREFIX:-}"          # blank = look it up from GitHub (recommended)
 SET_GITHUB_SETTINGS="${SET_GITHUB_SETTINGS:-yes}"   # "no" = skip step 5
 # -----------------------------------------------------------------------------
 
@@ -38,13 +41,41 @@ fi
 command -v aws >/dev/null || { echo "AWS CLI not found. Install: https://aws.amazon.com/cli/" >&2; exit 1; }
 
 ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+
+# ---- GitHub OIDC subject ----------------------------------------------------
+# AWS only lets GitHub assume the role when the token's "sub" claim matches the
+# trust policy exactly. Repos created after 15 Jul 2026 (and renamed or
+# transferred ones) send an "immutable" subject that includes numeric IDs:
+#     repo:ORG@OWNER_ID/REPO@REPO_ID:ref:refs/heads/main
+# Older repos still send   repo:ORG/REPO:ref:refs/heads/main   unless opted in.
+# Guessing the wrong form gives "Not authorized to perform
+# sts:AssumeRoleWithWebIdentity" in the Action log, so ask GitHub for the real
+# prefix rather than guessing. Override with GITHUB_SUB_PREFIX=... if needed.
+if [[ -z "$GITHUB_SUB_PREFIX" ]] && command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+  # On failure gh prints the error body to stdout, so blank the value unless gh succeeded.
+  GITHUB_SUB_PREFIX="$(gh api "repos/$GITHUB_ORG/$GITHUB_REPO/actions/oidc/customization/sub" \
+    --jq '.sub_claim_prefix // empty' 2>/dev/null)" || GITHUB_SUB_PREFIX=""
+fi
+if [[ -z "$GITHUB_SUB_PREFIX" || "$GITHUB_SUB_PREFIX" != repo:* ]]; then
+  cat >&2 <<MSG
+Could not get a valid GitHub OIDC subject for $GITHUB_ORG/$GITHUB_REPO (got: '${GITHUB_SUB_PREFIX:-nothing}').
+Make sure the repo exists on GitHub and \`gh auth status\` works, then re-run.
+Or find it yourself and pass it in:
+  gh api repos/$GITHUB_ORG/$GITHUB_REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+  GITHUB_SUB_PREFIX='repo:$GITHUB_ORG@<owner id>/$GITHUB_REPO@<repo id>' ./aws/setup_aws.sh
+MSG
+  exit 1
+fi
+
 say "AWS account $ACCOUNT_ID, region $REGION, bucket $BUCKET, repo $GITHUB_ORG/$GITHUB_REPO"
+echo "GitHub OIDC subject the role will trust: ${GITHUB_SUB_PREFIX}:ref:refs/heads/main"
 
 # Fill placeholders in the JSON templates
 render() {
   sed -e "s|<AWS_ACCOUNT_ID>|$ACCOUNT_ID|g" \
       -e "s|<GITHUB_ORG>|$GITHUB_ORG|g" \
       -e "s|<GITHUB_REPO>|$GITHUB_REPO|g" \
+      -e "s|<GITHUB_SUB_PREFIX>|$GITHUB_SUB_PREFIX|g" \
       -e "s|<S3_BUCKET>|$BUCKET|g" \
       -e "s|<ELLUCIAN_ACCOUNT_ID>|$ELLUCIAN_ACCOUNT_ID|g" \
       "$HERE/$1" > "$TMP/$1"
@@ -101,6 +132,7 @@ else
     --description "GitHub Actions: $GITHUB_ORG/$GITHUB_REPO syncs scripts/ to s3://$BUCKET" >/dev/null
   echo "Role created."
 fi
+echo "Trusts GitHub subject: ${GITHUB_SUB_PREFIX}:ref:refs/heads/main"
 aws iam put-role-policy --role-name "$ROLE_NAME" \
   --policy-name s3-sync-scripts --policy-document "file://$PERMS"
 ROLE_ARN="$(aws iam get-role --role-name "$ROLE_NAME" --query Role.Arn --output text)"

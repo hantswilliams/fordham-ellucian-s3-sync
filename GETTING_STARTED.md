@@ -152,10 +152,12 @@ gh repo create fordham-ellucian-s3-sync --private --source=. --remote=origin
 Pick a bucket name. It must be **unique across all of AWS**, lowercase,
 with no spaces, so include your name, e.g. `hants-fordham-ellucian-test`.
 
-Replace `<your-github-username>` below with your username from Step 3:
+Replace `<your-github-username>` below with your username from Step 3. The
+script also asks GitHub for your repo's ID number (that's why Steps 3 and 4
+come first), so AWS trusts exactly this repo and nothing else:
 
 ```bash
-GITHUB_ORG=<your-github-username> \
+GITHUB_ORG=hantswilliams \
 BUCKET=hants-fordham-ellucian-test \
 ./aws/setup_aws.sh
 ```
@@ -172,6 +174,7 @@ Created.
 
 ==> 3/5 IAM role github-actions-fordham-ellucian-s3-sync
 Role created.
+Trusts GitHub subject: repo:hantswilliams@12345678/fordham-ellucian-s3-sync@987654321:ref:refs/heads/main
 Permissions policy attached. Role ARN: arn:aws:iam::123456789012:role/github-actions-...
 
 ==> 4/5 Ellucian bucket policy
@@ -268,7 +271,8 @@ trigger it. To run it anyway: GitHub → **Actions** → **Sync scripts to S3** 
 
 | What you see | What it means | Fix |
 |---|---|---|
-| `Not authorized to perform sts:AssumeRoleWithWebIdentity` (in the Action log) | AWS doesn't recognize the repo or branch | Re-run Step 5 with the **exact** GitHub username (it's case-sensitive) and make sure you pushed to `main` |
+| `Not authorized to perform sts:AssumeRoleWithWebIdentity` (in the Action log) | The role's trust policy doesn't match what GitHub sent. Since July 2026 new repos send a subject with ID numbers (`repo:you@123/repo@456:...`); if the role was set up with the old `repo:you/repo:...` form, or the username/repo name is wrong, AWS says no | Re-run Step 5 (it asks GitHub for the exact subject and prints it), make sure you pushed to `main`, then re-run the Action |
+| `Could not look up the GitHub OIDC subject` (from the setup script) | `gh` isn't signed in, or the repo doesn't exist on GitHub yet | Do Steps 3 and 4, then re-run Step 5 |
 | `Credentials could not be loaded` / `role-to-assume` is empty | `AWS_ROLE_ARN` secret is missing | Add it under Settings → Secrets and variables → Actions → **Secrets** |
 | `Invalid bucket name ""` | `S3_BUCKET` is missing, or was added as a secret instead of a variable | Add it on the **Variables** tab |
 | `BucketAlreadyExists` when running the setup script | Someone else in the world already uses that bucket name | Pick a more unique `BUCKET` name and re-run |
